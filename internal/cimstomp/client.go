@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/go-stomp/stomp/v3"
-	"github.com/go-stomp/stomp/v3/frame"
 )
 
 // Sentinel errors returned by Client.
@@ -352,8 +351,3 @@ func (c *Client) tokenForTest() string {
 	defer c.mu.Unlock()
 	return c.token
 }
-
-// Compile-time guard so the frame import survives if Send option helpers
-// ever go away. Currently we use SendOpt.Header which builds frame opts
-// internally.
-var _ = frame.ContentType

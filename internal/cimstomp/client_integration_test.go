@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"github.com/go-stomp/stomp/v3"
-	"github.com/go-stomp/stomp/v3/frame"
 )
 
 const (
@@ -396,7 +395,3 @@ func TestIntegration_CloseIdempotent(t *testing.T) {
 func timeStamp() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
-
-// Compile-time check: ensure the frame package is referenced so the import
-// stays needed if we later switch to direct frame manipulation.
-var _ = frame.SEND
