@@ -14,16 +14,8 @@ import (
 	"github.com/go-stomp/stomp/v3"
 )
 
-// Sentinel errors returned by Client.
-var (
-	// ErrNotConnected is returned when Request is called before Connect or
-	// after Close.
-	ErrNotConnected = errors.New("cimstomp: client not connected")
-
-	// ErrRequestTimeout is returned when the request context deadline expires
-	// before the broker delivers a response on the per-request reply-to queue.
-	ErrRequestTimeout = errors.New("cimstomp: request timeout")
-)
+// Sentinel errors are declared in errors.go so that both Client and
+// Publisher reference the same values.
 
 // tokenTopic is the GridAPPS-D auth-token bootstrap destination. The broker
 // is expected to reply to the SEND with a single frame whose body is the

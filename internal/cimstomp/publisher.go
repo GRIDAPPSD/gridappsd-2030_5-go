@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 
 	"github.com/go-stomp/stomp/v3"
 	"github.com/go-stomp/stomp/v3/frame"
@@ -46,7 +45,7 @@ func New(cfg STOMPConfig) *Publisher {
 func (p *Publisher) Connect() error {
 	conn, err := stomp.Dial("tcp", p.addr,
 		stomp.ConnOpt.Login(p.user, p.password),
-		stomp.ConnOpt.HeartBeat(10*time.Second, 10*time.Second),
+		stomp.ConnOpt.HeartBeat(heartbeat, heartbeat),
 		stomp.ConnOpt.Header(frame.ContentType, "application/json"),
 	)
 	if err != nil {
@@ -65,7 +64,7 @@ func (p *Publisher) Connect() error {
 //	{"mRID":"...","values":[{"v":1.02,"ts":1711300000000000,"q":"GOOD"},...]}
 func (p *Publisher) Publish(msg *PointMessage) error {
 	if p.conn == nil {
-		return fmt.Errorf("not connected")
+		return ErrNotConnected
 	}
 
 	payload := formatPayload(msg)
