@@ -311,35 +311,3 @@ func mapCtxErr(err error) error {
 	}
 	return err
 }
-
-// markConnectedForTest is a hook used by unit tests to drive code paths
-// that gate on the connected flag without standing up a real STOMP
-// connection. It is not part of the public API.
-func (c *Client) markConnectedForTest() {
-	c.connected.Store(true)
-	// Set a non-nil placeholder so the in-Request nil check does not fire.
-	// The placeholder is never used because tests that call this never
-	// progress past the ctx pre-check.
-	c.mu.Lock()
-	c.conn = &stomp.Conn{}
-	c.mu.Unlock()
-}
-
-// unmarkConnectedForTest reverses markConnectedForTest. Tests that toggle
-// the flag must restore it so other tests in the same binary do not
-// observe a poisoned Client.
-func (c *Client) unmarkConnectedForTest() {
-	c.connected.Store(false)
-	c.mu.Lock()
-	c.conn = nil
-	c.mu.Unlock()
-}
-
-// tokenForTest exposes the cached token to integration tests so they can
-// assert that Connect bootstrapped successfully. Not part of the public
-// API.
-func (c *Client) tokenForTest() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.token
-}
