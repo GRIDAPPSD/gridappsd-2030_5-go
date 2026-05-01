@@ -2,7 +2,9 @@ package cimstomp
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -30,6 +32,7 @@ const (
 	gossHasSubjectHeader = "GOSS_HAS_SUBJECT"
 	gossSubjectHeader    = "GOSS_SUBJECT"
 	replyToHeader        = "reply-to"
+	correlationIDHeader  = "correlation-id"
 )
 
 // heartbeat is the STOMP heartbeat interval in both directions. Matches the
@@ -201,15 +204,20 @@ func (c *Client) Request(ctx context.Context, destination string, body []byte) (
 		_ = sub.Unsubscribe()
 	}()
 
-	// Send the request. NOTE: deliberately no `correlation-id` header. The
-	// broker correlates via the per-request /temp-queue/... reply-to;
-	// adding a correlation-id would be redundant and is not what the
-	// GridAPPS-D platform expects. See research-stomp-cim-catalog.md
-	// section 7, item 7.
+	// Send the request. The broker still correlates the response via the
+	// per-request /temp-queue/... reply-to; the correlation-id header is
+	// defense-in-depth (Leon M2 / GAGO-013). If a future ticket
+	// consolidates onto a shared reply queue, the demux code on the
+	// receive side can then key on this id without a wire-format change.
+	corrID, err := newCorrelationID()
+	if err != nil {
+		return nil, fmt.Errorf("cimstomp.Client: generate correlation id: %w", err)
+	}
 	err = c.conn.Send(dest, "application/json", body,
 		stomp.SendOpt.Header(replyToHeader, replyTo),
 		stomp.SendOpt.Header(gossHasSubjectHeader, "True"),
 		stomp.SendOpt.Header(gossSubjectHeader, c.token),
+		stomp.SendOpt.Header(correlationIDHeader, corrID),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("cimstomp.Client: send to %s: %w", dest, err)
@@ -320,6 +328,18 @@ func newTempReplyDest() string {
 func newTokenReplyDest(user string) string {
 	n := tempDestCounter.Add(1)
 	return fmt.Sprintf("/queue/temp.token_resp.%s.%d.%d", user, time.Now().UnixNano(), n)
+}
+
+// newCorrelationID returns a hex-encoded 16-byte random identifier for use
+// in the correlation-id STOMP header. crypto/rand is used so that ids do
+// not collide across processes or restarts even if a future implementation
+// shares a reply queue.
+func newCorrelationID() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("crypto/rand: %w", err)
+	}
+	return hex.EncodeToString(buf[:]), nil
 }
 
 // mapCtxErr converts a context error into the package's sentinel error so
