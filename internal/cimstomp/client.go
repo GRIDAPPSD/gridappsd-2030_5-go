@@ -77,9 +77,18 @@ func NewClient(cfg STOMPConfig) *Client {
 }
 
 // Connect dials the STOMP broker and fetches the GridAPPS-D auth token.
-// It is safe to call only once per Client. Calling Connect after Close
-// is undefined.
+//
+// Connect is single-shot: it cannot be called after Close. A Client whose
+// Close has been called returns ErrClosed from Connect. To reuse the
+// lifecycle, construct a new Client via NewClient.
+//
+// Connect should be called at most once per Client; calling it twice on
+// a Client that has not been Closed is a programmer error and is not
+// guarded against here. v0 has no auto-reconnect; see GAGO-012.
 func (c *Client) Connect(ctx context.Context) error {
+	if c.closed.Load() {
+		return ErrClosed
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
