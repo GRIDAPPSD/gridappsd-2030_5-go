@@ -153,6 +153,8 @@ func (c *Client) Close() error {
 //   - context.Canceled if ctx is cancelled mid-flight.
 //   - wrapped broker errors otherwise.
 func (c *Client) Request(ctx context.Context, destination string, body []byte) ([]byte, error) {
+	// Lock-free fast path: connected.Load() short-circuits before-Connect and
+	// after-Close callers without touching the mutex.
 	if !c.connected.Load() {
 		return nil, ErrNotConnected
 	}
@@ -163,7 +165,16 @@ func (c *Client) Request(ctx context.Context, destination string, body []byte) (
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Re-check after taking the lock; a concurrent Close may have raced.
+	// Authoritative check under the mutex (Dutch H2 / item C, option 1).
+	// Two cases land here:
+	//   1. A concurrent Close raced between the connected.Load() above and
+	//      the lock acquisition.
+	//   2. A test that flipped the connected flag via markConnectedForTest
+	//      without a real STOMP session. The previous implementation kept
+	//      connected and a zero-value *stomp.Conn placeholder in lockstep;
+	//      we now treat nil c.conn as ErrNotConnected so the placeholder
+	//      can stay nil, and the test hook is no longer compiled into the
+	//      production binary.
 	if c.conn == nil {
 		return nil, ErrNotConnected
 	}
