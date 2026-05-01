@@ -60,124 +60,76 @@ func decodeEnvelope(raw []byte, checkComplete bool) (json.RawMessage, error) {
 	return env.Data, nil
 }
 
+// callEnveloped issues a request whose response is wrapped in the
+// standard {"data":...} envelope, decodes the envelope, and unmarshals
+// data into T. checkComplete=true rejects responseComplete=false with
+// ErrIncompleteResponse. The opName is the public method name used in
+// error wrapping so callers can read it directly.
+func callEnveloped[T any](ctx context.Context, c *Client, opName, destination string, req map[string]any, checkComplete bool) (*T, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("cim.%s: marshal request: %w", opName, err)
+	}
+
+	raw, err := c.r.Request(ctx, destination, body)
+	if err != nil {
+		return nil, fmt.Errorf("cim.%s: %w", opName, err)
+	}
+
+	data, err := decodeEnvelope(raw, checkComplete)
+	if err != nil {
+		return nil, fmt.Errorf("cim.%s: %w", opName, err)
+	}
+
+	var res T
+	if err := json.Unmarshal(data, &res); err != nil {
+		return nil, fmt.Errorf("cim.%s: decode result: %w", opName, err)
+	}
+	return &res, nil
+}
+
 // QueryData issues a SPARQL QUERY against the powergrid-model service.
 // The result is the parsed bindings. Multi-frame responses
 // (responseComplete=false) surface as ErrIncompleteResponse; the bridge
 // does not consume streaming results in v0.
 func (c *Client) QueryData(ctx context.Context, sparql string) (*QueryDataResult, error) {
-	body, err := json.Marshal(map[string]any{
+	return callEnveloped[QueryDataResult](ctx, c, "QueryData", RequestPowergridModel, map[string]any{
 		"requestType":  "QUERY",
 		"resultFormat": "JSON",
 		"queryString":  sparql,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("cim.QueryData: marshal request: %w", err)
-	}
-
-	raw, err := c.r.Request(ctx, RequestPowergridModel, body)
-	if err != nil {
-		return nil, fmt.Errorf("cim.QueryData: %w", err)
-	}
-
-	data, err := decodeEnvelope(raw, true)
-	if err != nil {
-		return nil, fmt.Errorf("cim.QueryData: %w", err)
-	}
-
-	var res QueryDataResult
-	if err := json.Unmarshal(data, &res); err != nil {
-		return nil, fmt.Errorf("cim.QueryData: decode result: %w", err)
-	}
-	return &res, nil
+	}, true)
 }
 
 // QueryModelInfo lists the CIM models registered with the platform.
 func (c *Client) QueryModelInfo(ctx context.Context) (*ModelInfoResult, error) {
-	body, err := json.Marshal(map[string]any{
+	return callEnveloped[ModelInfoResult](ctx, c, "QueryModelInfo", RequestPowergridModel, map[string]any{
 		"requestType":  "QUERY_MODEL_INFO",
 		"resultFormat": "JSON",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("cim.QueryModelInfo: marshal request: %w", err)
-	}
-
-	raw, err := c.r.Request(ctx, RequestPowergridModel, body)
-	if err != nil {
-		return nil, fmt.Errorf("cim.QueryModelInfo: %w", err)
-	}
-
-	data, err := decodeEnvelope(raw, false)
-	if err != nil {
-		return nil, fmt.Errorf("cim.QueryModelInfo: %w", err)
-	}
-
-	var res ModelInfoResult
-	if err := json.Unmarshal(data, &res); err != nil {
-		return nil, fmt.Errorf("cim.QueryModelInfo: decode result: %w", err)
-	}
-	return &res, nil
+	}, false)
 }
 
 // QueryObjectDict returns the dictionary of objects of a given type for
 // a model. The response shape varies by objectType, so the result is
 // surfaced as a map; callers decode further as needed.
 func (c *Client) QueryObjectDict(ctx context.Context, modelID, objectType string) (*ObjectDictResult, error) {
-	body, err := json.Marshal(map[string]any{
+	return callEnveloped[ObjectDictResult](ctx, c, "QueryObjectDict", RequestPowergridModel, map[string]any{
 		"requestType":  "QUERY_OBJECT_DICT",
 		"resultFormat": "JSON",
 		"modelId":      modelID,
 		"objectType":   objectType,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("cim.QueryObjectDict: marshal request: %w", err)
-	}
-
-	raw, err := c.r.Request(ctx, RequestPowergridModel, body)
-	if err != nil {
-		return nil, fmt.Errorf("cim.QueryObjectDict: %w", err)
-	}
-
-	data, err := decodeEnvelope(raw, false)
-	if err != nil {
-		return nil, fmt.Errorf("cim.QueryObjectDict: %w", err)
-	}
-
-	var res ObjectDictResult
-	if err := json.Unmarshal(data, &res); err != nil {
-		return nil, fmt.Errorf("cim.QueryObjectDict: decode result: %w", err)
-	}
-	return &res, nil
+	}, false)
 }
 
 // GetCIMDictionary fetches the CIM Dictionary feeder summary for a
 // model. This is a denormalized blob the bridge uses for DER and
 // measurement enumeration; it is distinct from raw CIM SPARQL output.
 func (c *Client) GetCIMDictionary(ctx context.Context, modelID string) (*CIMDictionary, error) {
-	body, err := json.Marshal(map[string]any{
+	return callEnveloped[CIMDictionary](ctx, c, "GetCIMDictionary", RequestConfig, map[string]any{
 		"configurationType": "CIM Dictionary",
 		"parameters": map[string]any{
 			"model_id": modelID,
 		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("cim.GetCIMDictionary: marshal request: %w", err)
-	}
-
-	raw, err := c.r.Request(ctx, RequestConfig, body)
-	if err != nil {
-		return nil, fmt.Errorf("cim.GetCIMDictionary: %w", err)
-	}
-
-	data, err := decodeEnvelope(raw, false)
-	if err != nil {
-		return nil, fmt.Errorf("cim.GetCIMDictionary: %w", err)
-	}
-
-	var res CIMDictionary
-	if err := json.Unmarshal(data, &res); err != nil {
-		return nil, fmt.Errorf("cim.GetCIMDictionary: decode result: %w", err)
-	}
-	return &res, nil
+	}, false)
 }
 
 // GetPlatformStatus returns a diagnostic snapshot of the platform's
