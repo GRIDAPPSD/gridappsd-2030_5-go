@@ -139,14 +139,23 @@ func (c *Client) Connect(ctx context.Context) error {
 	return nil
 }
 
-// Close disconnects the STOMP session. It is idempotent: calling Close on a
-// never-connected or already-closed Client returns nil.
+// Close disconnects the STOMP session and clears the cached auth token
+// field on the Client so further Request calls fail with ErrNotConnected
+// and the local Client struct no longer holds a live token reference.
+// It is idempotent: calling Close on a never-connected or already-closed
+// Client returns nil. Connect cannot be called after Close (returns
+// ErrClosed); construct a new Client to reuse.
 //
-// On Close, the cached auth token is zeroed under the mutex so a memory
-// dump of a long-lived process does not retain credentials past the
-// connection's lifetime (Leon L3). The Disconnect error, if any, is
-// logged via logDisconnectErr and also wrapped into the return value;
-// the connection is being torn down regardless.
+// Token clearing is best-effort. Go strings are immutable, so the heap
+// allocation that backed c.token is unreachable from this Client but the
+// underlying bytes are not overwritten until garbage collected. Earlier
+// copies in the fetchAuthToken read path and the c.cfg.Password field
+// also live on. A memory dump of a long-lived process can still surface
+// credentials (Leon L1, L3).
+//
+// The Disconnect error, if any, is logged via logDisconnectErr and also
+// wrapped into the return value; the connection is being torn down
+// regardless.
 func (c *Client) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
