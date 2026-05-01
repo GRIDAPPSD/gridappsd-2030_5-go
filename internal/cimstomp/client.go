@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -111,13 +112,21 @@ func (c *Client) Connect(ctx context.Context) error {
 		stomp.ConnOpt.HeartBeat(heartbeat, heartbeat),
 	)
 	if err != nil {
-		_ = tcp.Close()
+		// stomp.ConnectWithContext failed before the STOMP frame layer was
+		// up; only the raw TCP socket needs closing. Any tcp.Close error is
+		// logged inline because a leaked half-open TCP socket masks broker
+		// state leaks (Leon H2).
+		if cerr := tcp.Close(); cerr != nil {
+			log.Printf("cimstomp: tcp close after failed STOMP connect: %v", cerr)
+		}
 		return fmt.Errorf("cimstomp.Client: stomp connect %s: %w", c.cfg.Address, err)
 	}
 
 	token, err := fetchAuthToken(ctx, conn, c.cfg.User, c.cfg.Password)
 	if err != nil {
-		_ = conn.Disconnect()
+		// STOMP connection is up but token bootstrap failed; tear it down
+		// and log any Disconnect error rather than swallowing it (Leon H2).
+		logDisconnectErr(conn.Disconnect(), "Connect.fetchAuthToken")
 		return fmt.Errorf("cimstomp.Client: fetch auth token: %w", err)
 	}
 
@@ -132,6 +141,12 @@ func (c *Client) Connect(ctx context.Context) error {
 
 // Close disconnects the STOMP session. It is idempotent: calling Close on a
 // never-connected or already-closed Client returns nil.
+//
+// On Close, the cached auth token is zeroed under the mutex so a memory
+// dump of a long-lived process does not retain credentials past the
+// connection's lifetime (Leon L3). The Disconnect error, if any, is
+// logged via logDisconnectErr and also wrapped into the return value;
+// the connection is being torn down regardless.
 func (c *Client) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
@@ -141,12 +156,15 @@ func (c *Client) Close() error {
 	c.mu.Lock()
 	conn := c.conn
 	c.conn = nil
+	c.token = ""
 	c.mu.Unlock()
 
 	if conn == nil {
 		return nil
 	}
-	if err := conn.Disconnect(); err != nil {
+	err := conn.Disconnect()
+	logDisconnectErr(err, "Client.Close")
+	if err != nil {
 		return fmt.Errorf("cimstomp.Client: disconnect: %w", err)
 	}
 	return nil
