@@ -257,8 +257,11 @@ func TestIntegration_RequestHappyPath(t *testing.T) {
 			!strings.HasPrefix(replyTo, "/remote-temp-queue/") {
 			t.Errorf("reply-to = %q, want /temp-queue/response.* or /remote-temp-queue/* prefix", replyTo)
 		}
-		if _, ok := rec.headers["correlation-id"]; ok {
-			t.Errorf("correlation-id header present; broker does per-queue correlation, the bridge must not set it")
+		// correlation-id is sent as defense-in-depth (Leon M2 / GAGO-013).
+		// The broker still does per-queue correlation via /temp-queue/...; the
+		// header is future-proofing if a shared reply queue ever lands.
+		if got := rec.headers["correlation-id"]; got == "" {
+			t.Errorf("correlation-id header missing; want non-empty value (Leon M2 defense-in-depth)")
 		}
 		if string(rec.body) != string(body) {
 			t.Errorf("recorded body = %q, want %q", rec.body, body)

@@ -1,10 +1,11 @@
 package cimstomp
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"net"
 	"strings"
-	"time"
 
 	"github.com/go-stomp/stomp/v3"
 	"github.com/go-stomp/stomp/v3/frame"
@@ -42,15 +43,31 @@ func New(cfg STOMPConfig) *Publisher {
 	}
 }
 
-// Connect establishes the STOMP connection. Blocks until connected or error.
-func (p *Publisher) Connect() error {
-	conn, err := stomp.Dial("tcp", p.addr,
+// Connect establishes the STOMP connection. The provided context bounds
+// both the underlying TCP dial and the STOMP handshake.
+//
+// go-stomp v3.1.5's DialWithContext calls net.Dial (not net.DialContext),
+// so we dial ourselves with net.DialContext to honor ctx, then hand the
+// live conn to stomp.ConnectWithContext for the STOMP handshake.
+func (p *Publisher) Connect(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	var dialer net.Dialer
+	tcp, err := dialer.DialContext(ctx, "tcp", p.addr)
+	if err != nil {
+		return fmt.Errorf("cimstomp.Publisher: tcp dial %s: %w", p.addr, err)
+	}
+
+	conn, err := stomp.ConnectWithContext(ctx, tcp,
 		stomp.ConnOpt.Login(p.user, p.password),
-		stomp.ConnOpt.HeartBeat(10*time.Second, 10*time.Second),
+		stomp.ConnOpt.HeartBeat(heartbeat, heartbeat),
 		stomp.ConnOpt.Header(frame.ContentType, "application/json"),
 	)
 	if err != nil {
-		return fmt.Errorf("stomp dial %s: %w", p.addr, err)
+		_ = tcp.Close()
+		return fmt.Errorf("cimstomp.Publisher: stomp connect %s: %w", p.addr, err)
 	}
 	p.conn = conn
 	log.Printf("STOMP connected to %s", p.addr)
@@ -65,18 +82,36 @@ func (p *Publisher) Connect() error {
 //	{"mRID":"...","values":[{"v":1.02,"ts":1711300000000000,"q":"GOOD"},...]}
 func (p *Publisher) Publish(msg *PointMessage) error {
 	if p.conn == nil {
-		return fmt.Errorf("not connected")
+		return ErrNotConnected
 	}
 
 	payload := formatPayload(msg)
 	return p.conn.Send(msg.Topic, "application/json", []byte(payload))
 }
 
-// Close disconnects from STOMP.
-func (p *Publisher) Close() {
-	if p.conn != nil {
-		p.conn.Disconnect()
-		log.Println("STOMP disconnected")
+// Close disconnects from STOMP. Returns the broker disconnect error, if
+// any, after logging it; the caller will already be tearing down the
+// connection so the error is reported but not actionable.
+func (p *Publisher) Close() error {
+	if p.conn == nil {
+		return nil
+	}
+	err := p.conn.Disconnect()
+	logDisconnectErr(err, "Publisher.Close")
+	p.conn = nil
+	log.Println("STOMP disconnected")
+	if err != nil {
+		return fmt.Errorf("cimstomp.Publisher: disconnect: %w", err)
+	}
+	return nil
+}
+
+// logDisconnectErr logs a Disconnect error during cleanup. We do not fail
+// the operation on this; the connection is being torn down anyway. But a
+// silent swallow can mask broker-side state leaks (Leon H2).
+func logDisconnectErr(err error, where string) {
+	if err != nil {
+		log.Printf("cimstomp: disconnect error during %s: %v", where, err)
 	}
 }
 

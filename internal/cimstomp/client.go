@@ -2,9 +2,12 @@ package cimstomp
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -14,16 +17,8 @@ import (
 	"github.com/go-stomp/stomp/v3"
 )
 
-// Sentinel errors returned by Client.
-var (
-	// ErrNotConnected is returned when Request is called before Connect or
-	// after Close.
-	ErrNotConnected = errors.New("cimstomp: client not connected")
-
-	// ErrRequestTimeout is returned when the request context deadline expires
-	// before the broker delivers a response on the per-request reply-to queue.
-	ErrRequestTimeout = errors.New("cimstomp: request timeout")
-)
+// Sentinel errors are declared in errors.go so that both Client and
+// Publisher reference the same values.
 
 // tokenTopic is the GridAPPS-D auth-token bootstrap destination. The broker
 // is expected to reply to the SEND with a single frame whose body is the
@@ -38,6 +33,7 @@ const (
 	gossHasSubjectHeader = "GOSS_HAS_SUBJECT"
 	gossSubjectHeader    = "GOSS_SUBJECT"
 	replyToHeader        = "reply-to"
+	correlationIDHeader  = "correlation-id"
 )
 
 // heartbeat is the STOMP heartbeat interval in both directions. Matches the
@@ -85,9 +81,18 @@ func NewClient(cfg STOMPConfig) *Client {
 }
 
 // Connect dials the STOMP broker and fetches the GridAPPS-D auth token.
-// It is safe to call only once per Client. Calling Connect after Close
-// is undefined.
+//
+// Connect is single-shot: it cannot be called after Close. A Client whose
+// Close has been called returns ErrClosed from Connect. To reuse the
+// lifecycle, construct a new Client via NewClient.
+//
+// Connect should be called at most once per Client; calling it twice on
+// a Client that has not been Closed is a programmer error and is not
+// guarded against here. v0 has no auto-reconnect; see GAGO-012.
 func (c *Client) Connect(ctx context.Context) error {
+	if c.closed.Load() {
+		return ErrClosed
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -107,13 +112,21 @@ func (c *Client) Connect(ctx context.Context) error {
 		stomp.ConnOpt.HeartBeat(heartbeat, heartbeat),
 	)
 	if err != nil {
-		_ = tcp.Close()
+		// stomp.ConnectWithContext failed before the STOMP frame layer was
+		// up; only the raw TCP socket needs closing. Any tcp.Close error is
+		// logged inline because a leaked half-open TCP socket masks broker
+		// state leaks (Leon H2).
+		if cerr := tcp.Close(); cerr != nil {
+			log.Printf("cimstomp: tcp close after failed STOMP connect: %v", cerr)
+		}
 		return fmt.Errorf("cimstomp.Client: stomp connect %s: %w", c.cfg.Address, err)
 	}
 
 	token, err := fetchAuthToken(ctx, conn, c.cfg.User, c.cfg.Password)
 	if err != nil {
-		_ = conn.Disconnect()
+		// STOMP connection is up but token bootstrap failed; tear it down
+		// and log any Disconnect error rather than swallowing it (Leon H2).
+		logDisconnectErr(conn.Disconnect(), "Connect.fetchAuthToken")
 		return fmt.Errorf("cimstomp.Client: fetch auth token: %w", err)
 	}
 
@@ -126,8 +139,23 @@ func (c *Client) Connect(ctx context.Context) error {
 	return nil
 }
 
-// Close disconnects the STOMP session. It is idempotent: calling Close on a
-// never-connected or already-closed Client returns nil.
+// Close disconnects the STOMP session and clears the cached auth token
+// field on the Client so further Request calls fail with ErrNotConnected
+// and the local Client struct no longer holds a live token reference.
+// It is idempotent: calling Close on a never-connected or already-closed
+// Client returns nil. Connect cannot be called after Close (returns
+// ErrClosed); construct a new Client to reuse.
+//
+// Token clearing is best-effort. Go strings are immutable, so the heap
+// allocation that backed c.token is unreachable from this Client but the
+// underlying bytes are not overwritten until garbage collected. Earlier
+// copies in the fetchAuthToken read path and the c.cfg.Password field
+// also live on. A memory dump of a long-lived process can still surface
+// credentials (Leon L1, L3).
+//
+// The Disconnect error, if any, is logged via logDisconnectErr and also
+// wrapped into the return value; the connection is being torn down
+// regardless.
 func (c *Client) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
@@ -137,12 +165,15 @@ func (c *Client) Close() error {
 	c.mu.Lock()
 	conn := c.conn
 	c.conn = nil
+	c.token = ""
 	c.mu.Unlock()
 
 	if conn == nil {
 		return nil
 	}
-	if err := conn.Disconnect(); err != nil {
+	err := conn.Disconnect()
+	logDisconnectErr(err, "Client.Close")
+	if err != nil {
 		return fmt.Errorf("cimstomp.Client: disconnect: %w", err)
 	}
 	return nil
@@ -161,6 +192,8 @@ func (c *Client) Close() error {
 //   - context.Canceled if ctx is cancelled mid-flight.
 //   - wrapped broker errors otherwise.
 func (c *Client) Request(ctx context.Context, destination string, body []byte) ([]byte, error) {
+	// Lock-free fast path: connected.Load() short-circuits before-Connect and
+	// after-Close callers without touching the mutex.
 	if !c.connected.Load() {
 		return nil, ErrNotConnected
 	}
@@ -171,7 +204,16 @@ func (c *Client) Request(ctx context.Context, destination string, body []byte) (
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Re-check after taking the lock; a concurrent Close may have raced.
+	// Authoritative check under the mutex (Dutch H2 / item C, option 1).
+	// Two cases land here:
+	//   1. A concurrent Close raced between the connected.Load() above and
+	//      the lock acquisition.
+	//   2. A test that flipped the connected flag via markConnectedForTest
+	//      without a real STOMP session. The previous implementation kept
+	//      connected and a zero-value *stomp.Conn placeholder in lockstep;
+	//      we now treat nil c.conn as ErrNotConnected so the placeholder
+	//      can stay nil, and the test hook is no longer compiled into the
+	//      production binary.
 	if c.conn == nil {
 		return nil, ErrNotConnected
 	}
@@ -189,15 +231,20 @@ func (c *Client) Request(ctx context.Context, destination string, body []byte) (
 		_ = sub.Unsubscribe()
 	}()
 
-	// Send the request. NOTE: deliberately no `correlation-id` header. The
-	// broker correlates via the per-request /temp-queue/... reply-to;
-	// adding a correlation-id would be redundant and is not what the
-	// GridAPPS-D platform expects. See research-stomp-cim-catalog.md
-	// section 7, item 7.
+	// Send the request. The broker still correlates the response via the
+	// per-request /temp-queue/... reply-to; the correlation-id header is
+	// defense-in-depth (Leon M2 / GAGO-013). If a future ticket
+	// consolidates onto a shared reply queue, the demux code on the
+	// receive side can then key on this id without a wire-format change.
+	corrID, err := newCorrelationID()
+	if err != nil {
+		return nil, fmt.Errorf("cimstomp.Client: generate correlation id: %w", err)
+	}
 	err = c.conn.Send(dest, "application/json", body,
 		stomp.SendOpt.Header(replyToHeader, replyTo),
 		stomp.SendOpt.Header(gossHasSubjectHeader, "True"),
 		stomp.SendOpt.Header(gossSubjectHeader, c.token),
+		stomp.SendOpt.Header(correlationIDHeader, corrID),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("cimstomp.Client: send to %s: %w", dest, err)
@@ -310,6 +357,18 @@ func newTokenReplyDest(user string) string {
 	return fmt.Sprintf("/queue/temp.token_resp.%s.%d.%d", user, time.Now().UnixNano(), n)
 }
 
+// newCorrelationID returns a hex-encoded 16-byte random identifier for use
+// in the correlation-id STOMP header. crypto/rand is used so that ids do
+// not collide across processes or restarts even if a future implementation
+// shares a reply queue.
+func newCorrelationID() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("crypto/rand: %w", err)
+	}
+	return hex.EncodeToString(buf[:]), nil
+}
+
 // mapCtxErr converts a context error into the package's sentinel error so
 // callers can use errors.Is(err, ErrRequestTimeout). Cancellation is
 // surfaced verbatim because callers may want to distinguish it.
@@ -318,36 +377,4 @@ func mapCtxErr(err error) error {
 		return ErrRequestTimeout
 	}
 	return err
-}
-
-// markConnectedForTest is a hook used by unit tests to drive code paths
-// that gate on the connected flag without standing up a real STOMP
-// connection. It is not part of the public API.
-func (c *Client) markConnectedForTest() {
-	c.connected.Store(true)
-	// Set a non-nil placeholder so the in-Request nil check does not fire.
-	// The placeholder is never used because tests that call this never
-	// progress past the ctx pre-check.
-	c.mu.Lock()
-	c.conn = &stomp.Conn{}
-	c.mu.Unlock()
-}
-
-// unmarkConnectedForTest reverses markConnectedForTest. Tests that toggle
-// the flag must restore it so other tests in the same binary do not
-// observe a poisoned Client.
-func (c *Client) unmarkConnectedForTest() {
-	c.connected.Store(false)
-	c.mu.Lock()
-	c.conn = nil
-	c.mu.Unlock()
-}
-
-// tokenForTest exposes the cached token to integration tests so they can
-// assert that Connect bootstrapped successfully. Not part of the public
-// API.
-func (c *Client) tokenForTest() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.token
 }

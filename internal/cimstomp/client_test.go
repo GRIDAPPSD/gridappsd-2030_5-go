@@ -122,4 +122,118 @@ func TestSentinelErrors_AreDistinct(t *testing.T) {
 	if errors.Is(ErrNotConnected, ErrRequestTimeout) {
 		t.Errorf("ErrNotConnected must not match ErrRequestTimeout")
 	}
+	if errors.Is(ErrClosed, ErrNotConnected) {
+		t.Errorf("ErrClosed must not match ErrNotConnected")
+	}
+	if errors.Is(ErrClosed, ErrRequestTimeout) {
+		t.Errorf("ErrClosed must not match ErrRequestTimeout")
+	}
+}
+
+// TestConnect_AfterCloseReturnsErrClosed locks in the contract that a Client
+// is single-shot: once Close has been called, Connect must refuse and return
+// ErrClosed rather than silently re-arming the connected flag (review item D).
+func TestConnect_AfterCloseReturnsErrClosed(t *testing.T) {
+	c := NewClient(STOMPConfig{Address: "tcp://127.0.0.1:1", User: "u", Password: "p"})
+	if err := c.Close(); err != nil {
+		t.Fatalf("initial Close on never-connected client: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := c.Connect(ctx)
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("Connect after Close: got err = %v, want ErrClosed", err)
+	}
+}
+
+// TestPublisher_PublishNotConnectedSharesSentinel verifies item A: Publisher
+// reuses the package-level ErrNotConnected sentinel rather than its own
+// fmt.Errorf string.
+func TestPublisher_PublishNotConnectedSharesSentinel(t *testing.T) {
+	p := New(STOMPConfig{Address: "tcp://127.0.0.1:1", User: "u", Password: "p"})
+	err := p.Publish(&PointMessage{Topic: "/topic/x", MRID: "m"})
+	if !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("Publish before Connect: got err = %v, want ErrNotConnected", err)
+	}
+}
+
+// TestPublisher_CloseBeforeConnectReturnsNil verifies that Close on a never-
+// connected Publisher is a no-op, matching Client.Close's contract.
+func TestPublisher_CloseBeforeConnectReturnsNil(t *testing.T) {
+	p := New(STOMPConfig{Address: "tcp://127.0.0.1:1"})
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close on never-connected Publisher: %v", err)
+	}
+}
+
+// TestPublisher_ConnectContextAlreadyCancelled verifies that Connect on a
+// Publisher with a cancelled context returns the ctx error before any
+// network I/O.
+func TestPublisher_ConnectContextAlreadyCancelled(t *testing.T) {
+	p := New(STOMPConfig{Address: "127.0.0.1:1"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := p.Connect(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Connect with cancelled ctx: got %v, want context.Canceled", err)
+	}
+}
+
+// TestConnect_ContextAlreadyCancelled verifies that Client.Connect with a
+// cancelled context surfaces ctx.Err() before any TCP dial.
+func TestConnect_ContextAlreadyCancelled(t *testing.T) {
+	c := NewClient(STOMPConfig{Address: "127.0.0.1:1"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := c.Connect(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Connect with cancelled ctx: got %v, want context.Canceled", err)
+	}
+}
+
+// TestNewCorrelationID_FormatAndUnique verifies that newCorrelationID
+// returns a 32-char hex string and that two calls do not collide. The
+// header is defense-in-depth (Leon M2 / GAGO-013 item G).
+func TestNewCorrelationID_FormatAndUnique(t *testing.T) {
+	a, err := newCorrelationID()
+	if err != nil {
+		t.Fatalf("newCorrelationID: %v", err)
+	}
+	if len(a) != 32 {
+		t.Errorf("correlation id length = %d, want 32", len(a))
+	}
+	for _, ch := range a {
+		if !(ch >= '0' && ch <= '9') && !(ch >= 'a' && ch <= 'f') {
+			t.Errorf("correlation id %q contains non-hex char %q", a, ch)
+			break
+		}
+	}
+	b, err := newCorrelationID()
+	if err != nil {
+		t.Fatalf("newCorrelationID #2: %v", err)
+	}
+	if a == b {
+		t.Errorf("two newCorrelationID calls returned the same value: %q", a)
+	}
+}
+
+// TestLogDisconnectErr_NilIsNoOp verifies the helper does not panic when
+// called with a nil error.
+func TestLogDisconnectErr_NilIsNoOp(t *testing.T) {
+	logDisconnectErr(nil, "TestLogDisconnectErr_NilIsNoOp")
+}
+
+// TestNewTokenReplyDest_FormatAndUnique covers the bootstrap reply-queue
+// constructor; the integration tests exercise it but the unit tests did
+// not, leaving 0% coverage post-cleanup.
+func TestNewTokenReplyDest_FormatAndUnique(t *testing.T) {
+	a := newTokenReplyDest("admin")
+	if !strings.HasPrefix(a, "/queue/temp.token_resp.admin.") {
+		t.Errorf("token reply dest %q missing expected prefix", a)
+	}
+	b := newTokenReplyDest("admin")
+	if a == b {
+		t.Errorf("two calls returned the same dest: %q", a)
+	}
 }
