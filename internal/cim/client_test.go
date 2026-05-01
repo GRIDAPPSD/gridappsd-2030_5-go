@@ -400,3 +400,100 @@ func TestQueryModelInfoErrorEnvelope(t *testing.T) {
 		t.Errorf("err = %q, want containing 'boom'", err)
 	}
 }
+
+func TestQueryObjectDictErrorEnvelope(t *testing.T) {
+	t.Parallel()
+
+	mr := &mockRequester{resp: []byte(`{"error":"missing model"}`)}
+	c := NewClient(mr)
+
+	_, err := c.QueryObjectDict(context.Background(), "_x", "PEC")
+	if !errors.Is(err, ErrServerError) {
+		t.Errorf("err = %v, want ErrServerError", err)
+	}
+	if !strings.Contains(err.Error(), "missing model") {
+		t.Errorf("err = %q, want containing 'missing model'", err)
+	}
+}
+
+func TestQueryObjectDictRequesterError(t *testing.T) {
+	t.Parallel()
+
+	want := errors.New("subscribe failed")
+	mr := &mockRequester{err: want}
+	c := NewClient(mr)
+
+	_, err := c.QueryObjectDict(context.Background(), "_x", "PEC")
+	if !errors.Is(err, want) {
+		t.Errorf("err = %v, want wrapping %v", err, want)
+	}
+}
+
+func TestGetCIMDictionaryErrorEnvelope(t *testing.T) {
+	t.Parallel()
+
+	mr := &mockRequester{resp: []byte(`{"error":"no such feeder"}`)}
+	c := NewClient(mr)
+
+	_, err := c.GetCIMDictionary(context.Background(), "_x")
+	if !errors.Is(err, ErrServerError) {
+		t.Errorf("err = %v, want ErrServerError", err)
+	}
+	if !strings.Contains(err.Error(), "no such feeder") {
+		t.Errorf("err = %q, want containing 'no such feeder'", err)
+	}
+}
+
+func TestGetCIMDictionaryRequesterError(t *testing.T) {
+	t.Parallel()
+
+	want := errors.New("network down")
+	mr := &mockRequester{err: want}
+	c := NewClient(mr)
+
+	_, err := c.GetCIMDictionary(context.Background(), "_x")
+	if !errors.Is(err, want) {
+		t.Errorf("err = %v, want wrapping %v", err, want)
+	}
+}
+
+func TestGetPlatformStatusErrorEnvelope(t *testing.T) {
+	t.Parallel()
+
+	mr := &mockRequester{resp: []byte(`{"error":"platform unavailable"}`)}
+	c := NewClient(mr)
+
+	_, err := c.GetPlatformStatus(context.Background())
+	if !errors.Is(err, ErrServerError) {
+		t.Errorf("err = %v, want ErrServerError", err)
+	}
+	if !strings.Contains(err.Error(), "platform unavailable") {
+		t.Errorf("err = %q, want containing 'platform unavailable'", err)
+	}
+}
+
+func TestGetPlatformStatusRequesterError(t *testing.T) {
+	t.Parallel()
+
+	want := errors.New("timed out")
+	mr := &mockRequester{err: want}
+	c := NewClient(mr)
+
+	_, err := c.GetPlatformStatus(context.Background())
+	if !errors.Is(err, want) {
+		t.Errorf("err = %v, want wrapping %v", err, want)
+	}
+}
+
+func TestQueryModelInfoRequesterError(t *testing.T) {
+	t.Parallel()
+
+	want := errors.New("conn closed")
+	mr := &mockRequester{err: want}
+	c := NewClient(mr)
+
+	_, err := c.QueryModelInfo(context.Background())
+	if !errors.Is(err, want) {
+		t.Errorf("err = %v, want wrapping %v", err, want)
+	}
+}
