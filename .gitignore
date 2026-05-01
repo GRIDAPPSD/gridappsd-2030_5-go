@@ -1,0 +1,22 @@
+# Build artifacts
+bin/
+*.exe
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# AI assistant context (lives in Knowledge, not here)
+CLAUDE.md
+.claude/
+*.claude
+
+# Local environment
+.env
