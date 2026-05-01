@@ -15,11 +15,13 @@ import (
 // reaching the broker as a corrupted SPARQL string.
 var ErrInvalidFeederID = errors.New("cim: invalid feeder ID")
 
-// SPARQL query templates reproduced verbatim from the Python upstream's
-// Queries.py (gridappsd-2030_5). Each template carries a single %s
-// placeholder where the original Python code substitutes feeder_id via
-// %-formatting. Substitution at call time uses fmt.Sprintf to mirror the
-// upstream byte-for-byte, including whitespace and comments.
+// SPARQL query templates reproduced from the Python upstream's
+// Queries.py (gridappsd-2030_5) with trailing whitespace before
+// newlines normalized; SPARQL ignores it and the queries execute
+// identically against the broker. Verify against Queries.py before
+// edits. Each template carries a single %s placeholder where the
+// original Python code substitutes feeder_id via %-formatting.
+// Substitution at call time uses fmt.Sprintf.
 //
 // Source line numbers (Queries.py):
 //
