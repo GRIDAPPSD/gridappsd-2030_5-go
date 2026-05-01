@@ -250,8 +250,13 @@ func TestIntegration_RequestHappyPath(t *testing.T) {
 		if rec.headers["GOSS_SUBJECT"] != token {
 			t.Errorf("GOSS_SUBJECT = %q, want %q", rec.headers["GOSS_SUBJECT"], token)
 		}
-		if !strings.HasPrefix(rec.headers["reply-to"], "/temp-queue/response.") {
-			t.Errorf("reply-to = %q, want /temp-queue/response.* prefix", rec.headers["reply-to"])
+		// ActiveMQ rewrites /temp-queue/X to /remote-temp-queue/... for
+		// cross-connection receivers; either form is acceptable evidence
+		// that the bridge sent on the temp-queue path.
+		replyTo := rec.headers["reply-to"]
+		if !strings.HasPrefix(replyTo, "/temp-queue/response.") &&
+			!strings.HasPrefix(replyTo, "/remote-temp-queue/") {
+			t.Errorf("reply-to = %q, want /temp-queue/response.* or /remote-temp-queue/* prefix", replyTo)
 		}
 		if _, ok := rec.headers["correlation-id"]; ok {
 			t.Errorf("correlation-id header present; broker does per-queue correlation, the bridge must not set it")
