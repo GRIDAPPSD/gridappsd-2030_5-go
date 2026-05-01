@@ -1,0 +1,9 @@
+services:
+  activemq:
+    image: apache/activemq-classic:6.1.6
+    ports:
+      - "${STOMP_PORT:-61613}:61613"     # STOMP
+      - "${CONSOLE_PORT:-8161}:8161"     # Web console (admin/admin)
+    environment:
+      ACTIVEMQ_CONNECTION_USER: admin
+      ACTIVEMQ_CONNECTION_PASSWORD: admin
